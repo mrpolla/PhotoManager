@@ -8,16 +8,13 @@
 #include <QStatusBar>
 #include <QProgressBar>
 #include <QTimer>
-#include "zoomableimagelabel.h"
-#include "thumbnailservice.h"
-#include "projectmanager.h"
-#include "syncdialog.h"
+#include <QScrollArea>
 
 class ImageGridWidget;
 class FolderManager;
 class ThumbnailService;
-class ProjectManager;    // Add this
-class SyncDialog;        // Add this
+class ProjectManager;
+class ZoomableImageLabel;
 class QSplitter;
 
 class MainWindow : public QMainWindow
@@ -33,11 +30,11 @@ private slots:
     void addFolder();
     void refreshCurrentFolder();
     void clearProject();
-    void showProjectInfo();
     void newProject();
     void openProject();
     void closeProject();
     void synchronizeProject();
+    void showProjectInfo();
 
     // FolderManager signals
     void onFolderSelected(const QString &folderPath);
@@ -48,7 +45,6 @@ private slots:
     void onLoadingStarted(int totalImages);
     void onLoadingProgress(int loaded, int total);
     void onLoadingFinished(int totalImages);
-
 
 private:
     // UI Setup
@@ -64,7 +60,6 @@ private:
     // Settings
     void saveSettings();
     void loadSettings();
-    void restoreLastFolder();
 
     // Status Management
     void updateStatus(const QString &message);
@@ -73,16 +68,15 @@ private:
     // UI Components
     FolderManager *folderManager;
     ImageGridWidget *imageGrid;
-    //QLabel *imageLabel;
-    ZoomableImageLabel *imageLabel;  // Change this line
-    QScrollArea *imageScrollArea;    // Add this line
+    ZoomableImageLabel *imageLabel;
+    QScrollArea *imageScrollArea;
     QPushButton *addFolderButton;
     QStatusBar *m_statusBar;
     QProgressBar *progressBar;
     QTimer *statusTimer;
 
     // Services
-    ThumbnailService *thumbnailService;  // Add this line here
+    ThumbnailService *thumbnailService;
     ProjectManager *projectManager;
 
     // Data

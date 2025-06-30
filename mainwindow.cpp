@@ -4,6 +4,7 @@
 #include "zoomableimagelabel.h"
 #include "projectmanager.h"
 #include "syncdialog.h"
+#include "thumbnailservice.h"
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -23,14 +24,13 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QLineEdit>
-#include <QSqlDatabase>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     // Create services
     thumbnailService = new ThumbnailService(this);
-    projectManager = new ProjectManager(this);  // Add this line
+    projectManager = new ProjectManager(this);
 
     setupUI();
     loadSettings();
@@ -109,7 +109,7 @@ void MainWindow::createMainLayout()
     leftLayout->addWidget(treeWidget);
 
     // Middle Panel: Image Grid
-    imageGrid = new ImageGridWidget(thumbnailService);  // Pass thumbnail service
+    imageGrid = new ImageGridWidget(thumbnailService);
 
     // Right Panel: Zoomable Image Display
     imageScrollArea = new QScrollArea;
@@ -132,7 +132,7 @@ void MainWindow::createMainLayout()
     // Add panels to splitter
     splitter->addWidget(leftPanel);
     splitter->addWidget(imageGrid);
-    splitter->addWidget(imageScrollArea);  // Use scroll area
+    splitter->addWidget(imageScrollArea);
     splitter->setSizes({250, 500, 350});
 }
 
@@ -165,21 +165,7 @@ void MainWindow::connectSignals()
     connect(imageGrid, &ImageGridWidget::loadingFinished, this, &MainWindow::onLoadingFinished);
 }
 
-void MainWindow::clearProject()
-{
-    QMessageBox::StandardButton result = QMessageBox::question(this, "Clear Project",
-                                                               "Clear all folders from the current project?\n\n"
-                                                               "This will not delete any files from disk.",
-                                                               QMessageBox::Yes | QMessageBox::No,
-                                                               QMessageBox::No);
-
-    if (result == QMessageBox::Yes) {
-        folderManager->clearAllFolders();
-        imageGrid->clearImages();
-        imageLabel->setImagePixmap(QPixmap());  // Use setImagePixmap instead of setPixmap
-        updateStatus("Project cleared");
-    }
-}
+// ===== PROJECT MANAGEMENT =====
 
 void MainWindow::newProject()
 {
@@ -244,6 +230,22 @@ void MainWindow::synchronizeProject()
     dialog.exec();
 }
 
+void MainWindow::clearProject()
+{
+    QMessageBox::StandardButton result = QMessageBox::question(this, "Clear Project",
+                                                               "Clear all folders from the current project?\n\n"
+                                                               "This will not delete any files from disk.",
+                                                               QMessageBox::Yes | QMessageBox::No,
+                                                               QMessageBox::No);
+
+    if (result == QMessageBox::Yes) {
+        folderManager->clearAllFolders();
+        imageGrid->clearImages();
+        imageLabel->setImagePixmap(QPixmap());
+        updateStatus("Project cleared");
+    }
+}
+
 void MainWindow::showProjectInfo()
 {
     if (projectManager && projectManager->hasOpenProject()) {
@@ -277,7 +279,7 @@ void MainWindow::showProjectInfo()
     }
 }
 
-// ===== UI ACTIONS =====
+// ===== FOLDER MANAGEMENT =====
 
 void MainWindow::addFolder()
 {
@@ -285,6 +287,12 @@ void MainWindow::addFolder()
     QString folderPath = QFileDialog::getExistingDirectory(this, "Select Folder");
     if (!folderPath.isEmpty()) {
         folderManager->addFolder(folderPath);
+
+        // If we have an open project, add to project database
+        if (projectManager->hasOpenProject()) {
+            projectManager->addFolder(folderPath);
+        }
+
         updateStatus("Folder added successfully");
     } else {
         updateStatus("No folder selected");
@@ -299,15 +307,16 @@ void MainWindow::refreshCurrentFolder()
     }
 }
 
-// ===== FOLDER MANAGEMENT =====
-
 void MainWindow::onFolderSelected(const QString &folderPath)
 {
     // Let ImageGridWidget handle the image loading
     imageGrid->loadImagesFromFolder(folderPath);
 
     // Save last opened folder
-    settings->setValue("lastFolder", folderPath);
+    if (settings) {
+        settings->setValue("lastFolder", folderPath);
+    }
+
     updateStatus("Loading folder: " + QDir(folderPath).dirName());
 }
 
@@ -341,6 +350,7 @@ void MainWindow::displayFullImage(const QString &imagePath)
         updateStatus("Could not load image: " + imagePath);
     }
 }
+
 // ===== LOADING PROGRESS =====
 
 void MainWindow::onLoadingStarted(int totalImages)
@@ -371,8 +381,10 @@ void MainWindow::saveSettings()
     settings->setValue("windowGeometry", saveGeometry());
     settings->setValue("windowState", saveState());
 
-    // Save project folders
-    folderManager->saveProject(settings);
+    // Save project folders (legacy support)
+    if (folderManager) {
+        folderManager->saveProject(settings);
+    }
 }
 
 void MainWindow::loadSettings()
@@ -382,8 +394,10 @@ void MainWindow::loadSettings()
     restoreGeometry(settings->value("windowGeometry").toByteArray());
     restoreState(settings->value("windowState").toByteArray());
 
-    // Load project folders
-    folderManager->loadProject(settings);
+    // Load project folders (legacy support)
+    if (folderManager) {
+        folderManager->loadProject(settings);
+    }
 }
 
 // ===== STATUS MANAGEMENT =====

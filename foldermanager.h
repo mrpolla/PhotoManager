@@ -55,7 +55,7 @@ private:
 
     QTreeWidget *m_treeWidget;
     QStringList m_supportedExtensions;
-    QStringList m_projectFolders;  // Track all project folders
+    QStringList m_projectFolders;
     static const int MAX_SUBFOLDER_DEPTH = 5;
 };
 

@@ -8,16 +8,41 @@
 #include <QPixmap>
 #include <QMouseEvent>
 
-// ClickableLabel Implementation (unchanged)
+// === Constants ===
+namespace {
+constexpr int DEFAULT_THUMBNAIL_SIZE = 120;
+constexpr int DEFAULT_MAX_IMAGES = 100;
+constexpr int DEFAULT_GRID_COLUMNS = 4;
+constexpr int THUMBNAIL_MARGIN = 4;
+constexpr int GRID_SPACING = 5;
+constexpr int MIN_GRID_COLUMNS = 1;
+constexpr int COLUMN_SPACING = 10;
+
+const QString PLACEHOLDER_STYLE = "font-size: 14px; color: gray; padding: 20px;";
+const QString THUMBNAIL_STYLE = "border: 1px solid lightgray; margin: 2px; background-color: white;";
+
+const QString MSG_SELECT_FOLDER = "Select a folder to view images";
+const QString MSG_NO_FOLDER = "No folder selected";
+const QString MSG_NO_IMAGES = "No images found in this folder";
+}
+
+// === ClickableLabel Implementation ===
+
 ClickableLabel::ClickableLabel(const QString &imagePath, QWidget *parent)
-    : QLabel(parent), m_imagePath(imagePath)
+    : QLabel(parent)
+    , m_imagePath(imagePath)
+{
+    setupThumbnailLabel();
+}
+
+void ClickableLabel::setupThumbnailLabel()
 {
     setCursor(Qt::PointingHandCursor);
-    setStyleSheet("border: 1px solid lightgray; margin: 2px; background-color: white;");
+    setStyleSheet(THUMBNAIL_STYLE);
     setAlignment(Qt::AlignCenter);
 
     // Set tooltip with filename
-    QFileInfo fileInfo(imagePath);
+    const QFileInfo fileInfo(m_imagePath);
     setToolTip(fileInfo.fileName());
 }
 
@@ -29,113 +54,71 @@ void ClickableLabel::mousePressEvent(QMouseEvent *event)
     QLabel::mousePressEvent(event);
 }
 
-// ImageGridWidget Implementation
+// === ImageGridWidget Implementation ===
+
 ImageGridWidget::ImageGridWidget(ThumbnailService *thumbnailService, QWidget *parent)
     : QScrollArea(parent)
     , m_thumbnailService(thumbnailService)
     , m_loadedCount(0)
-    , m_thumbnailSize(120)
-    , m_maxImagesPerLoad(100)
-    , m_gridColumns(4)
+    , m_thumbnailSize(DEFAULT_THUMBNAIL_SIZE)
+    , m_maxImagesPerLoad(DEFAULT_MAX_IMAGES)
+    , m_gridColumns(DEFAULT_GRID_COLUMNS)
     , m_gridWidget(nullptr)
     , m_gridLayout(nullptr)
     , m_currentRow(0)
     , m_currentCol(0)
 {
     setupUI();
-
-    // Connect to thumbnail service signals
-    if (m_thumbnailService) {
-        connect(m_thumbnailService, &ThumbnailService::thumbnailReady,
-                this, &ImageGridWidget::onThumbnailReady);
-    }
+    connectSignals();
 }
 
-void ImageGridWidget::setupUI()
-{
-    setWidgetResizable(true);
-    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-
-    showPlaceholder("Select a folder to view images");
-}
+// === Public Methods ===
 
 void ImageGridWidget::loadImagesFromFolder(const QString &folderPath)
 {
+    resetState();
     m_currentFolder = folderPath;
-    m_currentImages.clear();
-    m_pendingImages.clear();
-    m_loadedCount = 0;
 
     if (folderPath.isEmpty()) {
-        showPlaceholder("No folder selected");
+        showPlaceholder(MSG_NO_FOLDER);
         return;
     }
 
-    // Get image files
-    QDir dir(folderPath);
-    QStringList filters;
-    filters << "*.jpg" << "*.jpeg" << "*.png" << "*.bmp" << "*.gif"
-            << "*.tiff" << "*.tif" << "*.webp";
-
-    QStringList imageFiles = dir.entryList(filters, QDir::Files, QDir::Name);
-
+    const QStringList imageFiles = scanForImages(folderPath);
     if (imageFiles.isEmpty()) {
-        showPlaceholder("No images found in this folder");
+        showPlaceholder(MSG_NO_IMAGES);
         emit loadingFinished(0);
         return;
     }
 
-    // Convert to absolute paths
-    for (const QString &fileName : imageFiles) {
-        m_currentImages.append(dir.absoluteFilePath(fileName));
-    }
-
-    // Limit images for performance
-    if (m_currentImages.size() > m_maxImagesPerLoad) {
-        m_currentImages = m_currentImages.mid(0, m_maxImagesPerLoad);
-    }
-
-    emit loadingStarted(m_currentImages.size());
-    createThumbnailGrid();
+    prepareImageList(imageFiles);
+    startLoading();
 }
 
-void ImageGridWidget::createThumbnailGrid()
+void ImageGridWidget::clearImages()
 {
-    // Create new grid widget
-    m_gridWidget = new QWidget;
-    m_gridLayout = new QGridLayout(m_gridWidget);
-    m_gridLayout->setSpacing(5);
-    m_gridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    resetState();
+    showPlaceholder(MSG_SELECT_FOLDER);
+}
 
-    calculateGridDimensions();
-
-    // Reset grid position
-    m_currentRow = 0;
-    m_currentCol = 0;
-
-    // Set the widget to scroll area immediately
-    setWidget(m_gridWidget);
-
-    // Request thumbnails for all images
-    m_pendingImages = m_currentImages;
-
+void ImageGridWidget::setThumbnailSize(int size)
+{
+    m_thumbnailSize = qMax(16, size);
     if (m_thumbnailService) {
-        // Get thumbnails (this will trigger onThumbnailReady for each one)
-        for (const QString &imagePath : m_currentImages) {
-            QPixmap thumbnail = m_thumbnailService->getThumbnail(imagePath, m_thumbnailSize);
-            if (!thumbnail.isNull()) {
-                // Thumbnail was in cache - add immediately
-                addThumbnailToGrid(imagePath, thumbnail);
-            }
-            // If thumbnail wasn't cached, onThumbnailReady will be called when it's ready
-        }
+        m_thumbnailService->setThumbnailSize(m_thumbnailSize);
     }
+}
 
-    // If all thumbnails were cached, we're done
-    if (m_loadedCount >= m_currentImages.size()) {
-        emit loadingFinished(m_loadedCount);
-    }
+void ImageGridWidget::setMaxImagesPerLoad(int maxImages)
+{
+    m_maxImagesPerLoad = qMax(1, maxImages);
+}
+
+// === Private Slots ===
+
+void ImageGridWidget::onThumbnailClicked(const QString &imagePath)
+{
+    emit imageClicked(imagePath);
 }
 
 void ImageGridWidget::onThumbnailReady(const QString &imagePath, const QPixmap &thumbnail)
@@ -145,69 +128,56 @@ void ImageGridWidget::onThumbnailReady(const QString &imagePath, const QPixmap &
         return;
     }
 
-    addThumbnailToGrid(imagePath, thumbnail);
+    // Check if this image was already added to avoid duplicates
+    if (!isImageAlreadyInGrid(imagePath)) {
+        addThumbnailToGrid(imagePath, thumbnail);
+    }
+
     m_pendingImages.removeAll(imagePath);
 
-    // Check if we're done loading
+    // Check if loading is complete
     if (m_pendingImages.isEmpty()) {
         emit loadingFinished(m_loadedCount);
     }
 }
 
-void ImageGridWidget::addThumbnailToGrid(const QString &imagePath, const QPixmap &thumbnail)
+bool ImageGridWidget::isImageAlreadyInGrid(const QString &imagePath) const
 {
-    if (!m_gridLayout || thumbnail.isNull()) {
-        return;
+    return m_addedImages.contains(imagePath);
+}
+
+// === Private Methods - UI Management ===
+
+void ImageGridWidget::setupUI()
+{
+    setWidgetResizable(true);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    showPlaceholder(MSG_SELECT_FOLDER);
+}
+
+void ImageGridWidget::connectSignals()
+{
+    if (m_thumbnailService) {
+        connect(m_thumbnailService, &ThumbnailService::thumbnailReady,
+                this, &ImageGridWidget::onThumbnailReady);
     }
-
-    ClickableLabel *thumbnailLabel = createThumbnailWidget(imagePath);
-    if (thumbnailLabel) {
-        thumbnailLabel->setPixmap(thumbnail);
-
-        m_gridLayout->addWidget(thumbnailLabel, m_currentRow, m_currentCol);
-
-        m_currentCol++;
-        if (m_currentCol >= m_gridColumns) {
-            m_currentCol = 0;
-            m_currentRow++;
-        }
-
-        m_loadedCount++;
-        emit loadingProgress(m_loadedCount, m_currentImages.size());
-    }
 }
 
-void ImageGridWidget::calculateGridDimensions()
+void ImageGridWidget::createThumbnailGrid()
 {
-    // Calculate columns based on viewport width
-    int availableWidth = viewport()->width();
-    m_gridColumns = qMax(1, availableWidth / (m_thumbnailSize + 10));
-}
+    // Create new grid widget and layout
+    m_gridWidget = new QWidget;
+    m_gridLayout = new QGridLayout(m_gridWidget);
+    m_gridLayout->setSpacing(GRID_SPACING);
+    m_gridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
 
-ClickableLabel* ImageGridWidget::createThumbnailWidget(const QString &imagePath)
-{
-    ClickableLabel *thumbnailLabel = new ClickableLabel(imagePath);
-    thumbnailLabel->setFixedSize(m_thumbnailSize + 4, m_thumbnailSize + 4);
+    calculateGridDimensions();
+    resetGridPosition();
 
-    connect(thumbnailLabel, &ClickableLabel::clicked,
-            this, &ImageGridWidget::onThumbnailClicked);
-
-    return thumbnailLabel;
-}
-
-void ImageGridWidget::onThumbnailClicked(const QString &imagePath)
-{
-    emit imageClicked(imagePath);
-}
-
-void ImageGridWidget::clearImages()
-{
-    m_currentImages.clear();
-    m_pendingImages.clear();
-    m_loadedCount = 0;
-    m_currentFolder.clear();
-
-    showPlaceholder("Select a folder to view images");
+    // Set the widget to scroll area
+    setWidget(m_gridWidget);
 }
 
 void ImageGridWidget::showPlaceholder(const QString &message)
@@ -217,21 +187,157 @@ void ImageGridWidget::showPlaceholder(const QString &message)
 
     QLabel *placeholderLabel = new QLabel(message);
     placeholderLabel->setAlignment(Qt::AlignCenter);
-    placeholderLabel->setStyleSheet("font-size: 14px; color: gray; padding: 20px;");
+    placeholderLabel->setStyleSheet(PLACEHOLDER_STYLE);
 
     layout->addWidget(placeholderLabel);
     setWidget(placeholderWidget);
 }
 
-void ImageGridWidget::setThumbnailSize(int size)
+QStringList ImageGridWidget::getSupportedExtensions() const
 {
-    m_thumbnailSize = size;
-    if (m_thumbnailService) {
-        m_thumbnailService->setThumbnailSize(size);
+    return QStringList() << "*.jpg" << "*.jpeg" << "*.png" << "*.bmp"
+                         << "*.gif" << "*.tiff" << "*.tif" << "*.webp";
+}
+
+// === Private Methods - Thumbnail Management ===
+
+ClickableLabel* ImageGridWidget::createThumbnailWidget(const QString &imagePath)
+{
+    ClickableLabel *thumbnailLabel = new ClickableLabel(imagePath);
+    const int widgetSize = m_thumbnailSize + THUMBNAIL_MARGIN;
+    thumbnailLabel->setFixedSize(widgetSize, widgetSize);
+
+    connect(thumbnailLabel, &ClickableLabel::clicked,
+            this, &ImageGridWidget::onThumbnailClicked);
+
+    return thumbnailLabel;
+}
+
+void ImageGridWidget::calculateGridDimensions()
+{
+    const int availableWidth = viewport()->width();
+    const int columnWidth = m_thumbnailSize + COLUMN_SPACING;
+    m_gridColumns = qMax(MIN_GRID_COLUMNS, availableWidth / columnWidth);
+}
+
+void ImageGridWidget::addThumbnailToGrid(const QString &imagePath, const QPixmap &thumbnail)
+{
+    if (!m_gridLayout || thumbnail.isNull()) {
+        return;
+    }
+
+    // Double-check we haven't already added this image
+    if (isImageAlreadyInGrid(imagePath)) {
+        return;
+    }
+
+    ClickableLabel *thumbnailLabel = createThumbnailWidget(imagePath);
+    if (!thumbnailLabel) {
+        return;
+    }
+
+    thumbnailLabel->setPixmap(thumbnail);
+    m_gridLayout->addWidget(thumbnailLabel, m_currentRow, m_currentCol);
+
+    // Track that this image was added
+    m_addedImages.insert(imagePath);
+
+    advanceGridPosition();
+    incrementLoadedCount();
+}
+
+// === Private Methods - State Management ===
+
+void ImageGridWidget::resetState()
+{
+    m_currentImages.clear();
+    m_pendingImages.clear();
+    m_addedImages.clear(); // Clear tracking of added images
+    m_loadedCount = 0;
+    m_currentFolder.clear();
+}
+
+void ImageGridWidget::resetGridPosition()
+{
+    m_currentRow = 0;
+    m_currentCol = 0;
+}
+
+void ImageGridWidget::advanceGridPosition()
+{
+    m_currentCol++;
+    if (m_currentCol >= m_gridColumns) {
+        m_currentCol = 0;
+        m_currentRow++;
     }
 }
 
-void ImageGridWidget::setMaxImagesPerLoad(int maxImages)
+void ImageGridWidget::incrementLoadedCount()
 {
-    m_maxImagesPerLoad = maxImages;
+    m_loadedCount++;
+    emit loadingProgress(m_loadedCount, m_currentImages.size());
+}
+
+// === Private Methods - Image Processing ===
+
+QStringList ImageGridWidget::scanForImages(const QString &folderPath) const
+{
+    const QDir dir(folderPath);
+    if (!dir.exists()) {
+        return QStringList();
+    }
+
+    const QStringList filters = getSupportedExtensions();
+    const QStringList imageFiles = dir.entryList(filters, QDir::Files, QDir::Name);
+
+    // Convert to absolute paths
+    QStringList absolutePaths;
+    for (const QString &fileName : imageFiles) {
+        absolutePaths.append(dir.absoluteFilePath(fileName));
+    }
+
+    return absolutePaths;
+}
+
+void ImageGridWidget::prepareImageList(const QStringList &imageFiles)
+{
+    m_currentImages = imageFiles;
+
+    // Limit images for performance
+    if (m_currentImages.size() > m_maxImagesPerLoad) {
+        m_currentImages = m_currentImages.mid(0, m_maxImagesPerLoad);
+    }
+}
+
+void ImageGridWidget::startLoading()
+{
+    emit loadingStarted(m_currentImages.size());
+    createThumbnailGrid();
+
+    // Request thumbnails for all images
+    m_pendingImages = m_currentImages;
+    m_addedImages.clear(); // Track images already added to grid
+
+    if (!m_thumbnailService) {
+        emit loadingFinished(0);
+        return;
+    }
+
+    // Request thumbnails from service
+    for (const QString &imagePath : m_currentImages) {
+        const QPixmap thumbnail = m_thumbnailService->getThumbnail(imagePath, m_thumbnailSize);
+        if (!thumbnail.isNull()) {
+            // Thumbnail was in cache - add immediately if not already added
+            if (!isImageAlreadyInGrid(imagePath)) {
+                addThumbnailToGrid(imagePath, thumbnail);
+                m_pendingImages.removeAll(imagePath);
+            }
+        }
+        // If thumbnail wasn't cached, onThumbnailReady will be called when ready
+    }
+
+    // If all thumbnails were cached, we're done
+    if (m_pendingImages.isEmpty()) {
+        emit loadingFinished(m_loadedCount);
+    }
 }

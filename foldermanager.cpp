@@ -75,7 +75,6 @@ void FolderManager::addFolder(const QString &folderPath)
     }
 
     m_treeWidget->addTopLevelItem(item);
-    // Don't expand by default anymore - let user expand when needed
 
     // Add to project folders list
     m_projectFolders.append(folderPath);
@@ -143,12 +142,12 @@ void FolderManager::removeSelectedFolder()
 
     // Confirm removal
     QFileInfo folderInfo(folderPath);
-    int result = QMessageBox::question(m_treeWidget, "Remove Folder",
-                                       QString("Remove '%1' from project?\n\n"
-                                               "This will not delete the actual folder from disk.")
-                                           .arg(folderInfo.baseName()),
-                                       QMessageBox::Yes | QMessageBox::No,
-                                       QMessageBox::No);
+    QMessageBox::StandardButton result = QMessageBox::question(m_treeWidget, "Remove Folder",
+                                                               QString("Remove '%1' from project?\n\n"
+                                                                       "This will not delete the actual folder from disk.")
+                                                                   .arg(folderInfo.baseName()),
+                                                               QMessageBox::Yes | QMessageBox::No,
+                                                               QMessageBox::No);
 
     if (result == QMessageBox::Yes) {
         // Remove from tree
