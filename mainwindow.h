@@ -10,10 +10,14 @@
 #include <QTimer>
 #include "zoomableimagelabel.h"
 #include "thumbnailservice.h"
+#include "projectmanager.h"
+#include "syncdialog.h"
 
 class ImageGridWidget;
 class FolderManager;
 class ThumbnailService;
+class ProjectManager;    // Add this
+class SyncDialog;        // Add this
 class QSplitter;
 
 class MainWindow : public QMainWindow
@@ -30,6 +34,10 @@ private slots:
     void refreshCurrentFolder();
     void clearProject();
     void showProjectInfo();
+    void newProject();
+    void openProject();
+    void closeProject();
+    void synchronizeProject();
 
     // FolderManager signals
     void onFolderSelected(const QString &folderPath);
@@ -40,6 +48,7 @@ private slots:
     void onLoadingStarted(int totalImages);
     void onLoadingProgress(int loaded, int total);
     void onLoadingFinished(int totalImages);
+
 
 private:
     // UI Setup
@@ -74,6 +83,7 @@ private:
 
     // Services
     ThumbnailService *thumbnailService;  // Add this line here
+    ProjectManager *projectManager;
 
     // Data
     QSettings *settings;

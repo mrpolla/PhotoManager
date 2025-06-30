@@ -2,6 +2,8 @@
 #include "imagegridwidget.h"
 #include "foldermanager.h"
 #include "zoomableimagelabel.h"
+#include "projectmanager.h"
+#include "syncdialog.h"
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -19,16 +21,20 @@
 #include <QPixmap>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QSqlDatabase>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    // Create thumbnail service first
+    // Create services
     thumbnailService = new ThumbnailService(this);
+    projectManager = new ProjectManager(this);  // Add this line
 
     setupUI();
     loadSettings();
-    updateStatus("Photo Manager ready");
+    updateStatus("Photo Manager ready - Create or open a project to begin");
 }
 
 MainWindow::~MainWindow()
@@ -53,16 +59,23 @@ void MainWindow::createMenuBar()
 
     // File Menu
     QMenu *fileMenu = menuBar->addMenu("&File");
+    fileMenu->addAction("&New Project...", this, &MainWindow::newProject);
+    fileMenu->addAction("&Open Project...", this, &MainWindow::openProject);
+    fileMenu->addSeparator();
     fileMenu->addAction("&Add Folder", QKeySequence::Open, this, &MainWindow::addFolder);
     fileMenu->addSeparator();
-    fileMenu->addAction("&Clear Project", this, &MainWindow::clearProject);
+    fileMenu->addAction("&Close Project", this, &MainWindow::closeProject);
     fileMenu->addSeparator();
     fileMenu->addAction("&Exit", QKeySequence::Quit, this, &QWidget::close);
 
+    // Project Menu
+    QMenu *projectMenu = menuBar->addMenu("&Project");
+    projectMenu->addAction("&Synchronize...", QKeySequence::Refresh, this, &MainWindow::synchronizeProject);
+    projectMenu->addSeparator();
+    projectMenu->addAction("&Project Info", this, &MainWindow::showProjectInfo);
+
     // View Menu
     QMenu *viewMenu = menuBar->addMenu("&View");
-    viewMenu->addAction("&Refresh", QKeySequence::Refresh, this, &MainWindow::refreshCurrentFolder);
-    viewMenu->addSeparator();
     viewMenu->addAction("&Expand All", this, [this]() { folderManager->expandAll(); });
     viewMenu->addAction("&Collapse All", this, [this]() { folderManager->collapseAll(); });
     viewMenu->addSeparator();
@@ -70,10 +83,6 @@ void MainWindow::createMenuBar()
         thumbnailService->clearCache();
         updateStatus("Thumbnail cache cleared");
     });
-
-    // Project Menu
-    QMenu *projectMenu = menuBar->addMenu("&Project");
-    projectMenu->addAction("&Project Info", this, &MainWindow::showProjectInfo);
 }
 
 void MainWindow::createMainLayout()
@@ -158,37 +167,114 @@ void MainWindow::connectSignals()
 
 void MainWindow::clearProject()
 {
-    int result = QMessageBox::question(this, "Clear Project",
-                                       "Clear all folders from the current project?\n\n"
-                                       "This will not delete any files from disk.",
-                                       QMessageBox::Yes | QMessageBox::No,
-                                       QMessageBox::No);
+    QMessageBox::StandardButton result = QMessageBox::question(this, "Clear Project",
+                                                               "Clear all folders from the current project?\n\n"
+                                                               "This will not delete any files from disk.",
+                                                               QMessageBox::Yes | QMessageBox::No,
+                                                               QMessageBox::No);
 
     if (result == QMessageBox::Yes) {
         folderManager->clearAllFolders();
         imageGrid->clearImages();
-        imageLabel->setPixmap(QPixmap());
-        imageLabel->setText("Select an image");
+        imageLabel->setImagePixmap(QPixmap());  // Use setImagePixmap instead of setPixmap
         updateStatus("Project cleared");
     }
 }
 
+void MainWindow::newProject()
+{
+    QString projectPath = QFileDialog::getExistingDirectory(this, "Select Project Location");
+    if (projectPath.isEmpty()) return;
+
+    bool ok;
+    QString projectName = QInputDialog::getText(this, "New Project",
+                                                "Project Name:",
+                                                QLineEdit::Normal,
+                                                "My Photo Project", &ok);
+    if (!ok || projectName.isEmpty()) return;
+
+    QString fullProjectPath = projectPath + "/" + projectName + ".photoproj";
+
+    if (projectManager->createProject(fullProjectPath, projectName)) {
+        updateStatus("Created project: " + projectName);
+    } else {
+        QMessageBox::warning(this, "Error", "Failed to create project.");
+    }
+}
+
+void MainWindow::openProject()
+{
+    QString projectPath = QFileDialog::getExistingDirectory(this, "Open Project");
+    if (projectPath.isEmpty()) return;
+
+    if (projectManager->openProject(projectPath)) {
+        // Load project folders into folder manager
+        QStringList projectFolders = projectManager->getProjectFolders();
+        folderManager->clearAllFolders();
+
+        for (const QString &folder : projectFolders) {
+            folderManager->addFolder(folder);
+        }
+
+        updateStatus("Opened project: " + projectManager->currentProjectName());
+    } else {
+        QMessageBox::warning(this, "Error", "Failed to open project.");
+    }
+}
+
+void MainWindow::closeProject()
+{
+    if (projectManager->hasOpenProject()) {
+        projectManager->closeProject();
+        folderManager->clearAllFolders();
+        imageGrid->clearImages();
+        imageLabel->setImagePixmap(QPixmap());
+        updateStatus("Project closed");
+    }
+}
+
+void MainWindow::synchronizeProject()
+{
+    if (!projectManager->hasOpenProject()) {
+        QMessageBox::information(this, "No Project", "Please open a project first.");
+        return;
+    }
+
+    SyncDialog dialog(projectManager, this);
+    dialog.exec();
+}
+
 void MainWindow::showProjectInfo()
 {
-    QStringList projectFolders = folderManager->getAllFolderPaths();
+    if (projectManager && projectManager->hasOpenProject()) {
+        QString info = QString("Project: %1\n"
+                               "Location: %2\n"
+                               "Total Images: %3\n"
+                               "Missing Files: %4\n"
+                               "Folders: %5")
+                           .arg(projectManager->currentProjectName())
+                           .arg(projectManager->currentProjectPath())
+                           .arg(projectManager->getTotalImageCount())
+                           .arg(projectManager->getMissingFileCount())
+                           .arg(projectManager->getProjectFolders().size());
 
-    QString info = QString("Project contains %1 folder(s):\n\n").arg(projectFolders.size());
+        QMessageBox::information(this, "Project Information", info);
+    } else {
+        QStringList projectFolders = folderManager->getAllFolderPaths();
 
-    for (const QString &folder : projectFolders) {
-        QFileInfo folderInfo(folder);
-        info += QString("• %1\n  %2\n\n").arg(folderInfo.baseName()).arg(folder);
+        QString info = QString("Current session contains %1 folder(s):\n\n").arg(projectFolders.size());
+
+        for (const QString &folder : projectFolders) {
+            QFileInfo folderInfo(folder);
+            info += QString("• %1\n  %2\n\n").arg(folderInfo.baseName()).arg(folder);
+        }
+
+        if (projectFolders.isEmpty()) {
+            info = "No folders in current session.\n\nUse 'Add Folder' to add folders.";
+        }
+
+        QMessageBox::information(this, "Session Information", info);
     }
-
-    if (projectFolders.isEmpty()) {
-        info = "No folders in current project.\n\nUse 'Add Folder' to add folders to your project.";
-    }
-
-    QMessageBox::information(this, "Project Information", info);
 }
 
 // ===== UI ACTIONS =====
