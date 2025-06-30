@@ -26,46 +26,61 @@ public:
     ~MainWindow();
 
 private slots:
-    // UI Actions
-    void addFolder();
-    void refreshCurrentFolder();
-    void clearProject();
+    // === Project Management ===
     void newProject();
     void openProject();
+    void openProject(const QString &projectPath);  // Overload for direct path
     void closeProject();
     void synchronizeProject();
     void showProjectInfo();
 
-    // FolderManager signals
+    // === Folder Management ===
+    void addFolder();
+    void refreshCurrentFolder();
+
+    // === Project Manager Signals ===
+    void onProjectOpened(const QString &projectName);
+    void onProjectClosed();
+
+    // === FolderManager Signals ===
     void onFolderSelected(const QString &folderPath);
     void onFolderAdded(const QString &folderPath);
 
-    // ImageGridWidget signals
+    // === ImageGridWidget Signals ===
     void onImageClicked(const QString &imagePath);
     void onLoadingStarted(int totalImages);
     void onLoadingProgress(int loaded, int total);
     void onLoadingFinished(int totalImages);
 
 private:
-    // UI Setup
+    // === UI Setup ===
     void setupUI();
     void createMenuBar();
     void createStatusBar();
     void createMainLayout();
     void connectSignals();
 
-    // Image Display
+    // === Project Workflow ===
+    void showWelcomeScreen();
+    void hideWelcomeScreen();
+    bool confirmProjectClose();
+    void enableProjectActions(bool enabled);
+
+    // === Image Display ===
     void displayFullImage(const QString &imagePath);
 
-    // Settings
+    // === Settings ===
     void saveSettings();
     void loadSettings();
 
-    // Status Management
+    // === Status Management ===
     void updateStatus(const QString &message);
     void clearStatus();
 
-    // UI Components
+    // === Window Management ===
+    void updateWindowTitle();
+
+    // === UI Components ===
     FolderManager *folderManager;
     ImageGridWidget *imageGrid;
     ZoomableImageLabel *imageLabel;
@@ -75,11 +90,16 @@ private:
     QProgressBar *progressBar;
     QTimer *statusTimer;
 
-    // Services
+    // === Welcome Screen ===
+    QWidget *welcomeWidget;
+    QPushButton *newProjectButton;
+    QPushButton *openProjectButton;
+
+    // === Services ===
     ThumbnailService *thumbnailService;
     ProjectManager *projectManager;
 
-    // Data
+    // === Data ===
     QSettings *settings;
 };
 

@@ -27,14 +27,24 @@
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , welcomeWidget(nullptr)
 {
     // Create services
     thumbnailService = new ThumbnailService(this);
     projectManager = new ProjectManager(this);
 
     setupUI();
+    connectSignals();
     loadSettings();
-    updateStatus("Photo Manager ready - Create or open a project to begin");
+    updateWindowTitle();
+
+    // Show welcome screen if no project is open
+    if (!projectManager->hasOpenProject()) {
+        showWelcomeScreen();
+        updateStatus("Welcome to Photo Manager - Create or open a project to begin");
+    } else {
+        updateStatus("Project loaded successfully");
+    }
 }
 
 MainWindow::~MainWindow()
@@ -47,7 +57,6 @@ void MainWindow::setupUI()
     createMenuBar();
     createMainLayout();
     createStatusBar();
-    connectSignals();
 
     setWindowTitle("Photo Manager");
     resize(1200, 800);
@@ -59,12 +68,12 @@ void MainWindow::createMenuBar()
 
     // File Menu
     QMenu *fileMenu = menuBar->addMenu("&File");
-    fileMenu->addAction("&New Project...", this, &MainWindow::newProject);
-    fileMenu->addAction("&Open Project...", this, &MainWindow::openProject);
+    fileMenu->addAction("&New Project...", QKeySequence::New, this, &MainWindow::newProject);
+    fileMenu->addAction("&Open Project...", QKeySequence::Open, this, [this]() { openProject(); });
     fileMenu->addSeparator();
-    fileMenu->addAction("&Add Folder", QKeySequence::Open, this, &MainWindow::addFolder);
+    fileMenu->addAction("&Add Folder", QKeySequence("Ctrl+F"), this, &MainWindow::addFolder);
     fileMenu->addSeparator();
-    fileMenu->addAction("&Close Project", this, &MainWindow::closeProject);
+    fileMenu->addAction("&Close Project", QKeySequence("Ctrl+W"), this, &MainWindow::closeProject);
     fileMenu->addSeparator();
     fileMenu->addAction("&Exit", QKeySequence::Quit, this, &QWidget::close);
 
@@ -76,12 +85,20 @@ void MainWindow::createMenuBar()
 
     // View Menu
     QMenu *viewMenu = menuBar->addMenu("&View");
-    viewMenu->addAction("&Expand All", this, [this]() { folderManager->expandAll(); });
-    viewMenu->addAction("&Collapse All", this, [this]() { folderManager->collapseAll(); });
+    viewMenu->addAction("&Expand All", this, [this]() {
+        if (folderManager) folderManager->expandAll();
+    });
+    viewMenu->addAction("&Collapse All", this, [this]() {
+        if (folderManager) folderManager->collapseAll();
+    });
+    viewMenu->addSeparator();
+    viewMenu->addAction("&Refresh Current Folder", QKeySequence("F5"), this, &MainWindow::refreshCurrentFolder);
     viewMenu->addSeparator();
     viewMenu->addAction("&Clear Thumbnail Cache", this, [this]() {
-        thumbnailService->clearCache();
-        updateStatus("Thumbnail cache cleared");
+        if (thumbnailService) {
+            thumbnailService->clearCache();
+            updateStatus("Thumbnail cache cleared");
+        }
     });
 }
 
@@ -99,7 +116,9 @@ void MainWindow::createMainLayout()
     // Left Panel: Folder Tree with FolderManager
     QWidget *leftPanel = new QWidget;
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+
     addFolderButton = new QPushButton("Add Folder");
+    addFolderButton->setEnabled(false); // Disabled until project is open
 
     // Create tree widget and folder manager
     QTreeWidget *treeWidget = new QTreeWidget;
@@ -154,6 +173,10 @@ void MainWindow::connectSignals()
     // UI signals
     connect(addFolderButton, &QPushButton::clicked, this, &MainWindow::addFolder);
 
+    // ProjectManager signals
+    connect(projectManager, &ProjectManager::projectOpened, this, &MainWindow::onProjectOpened);
+    connect(projectManager, &ProjectManager::projectClosed, this, &MainWindow::onProjectClosed);
+
     // FolderManager signals
     connect(folderManager, &FolderManager::folderSelected, this, &MainWindow::onFolderSelected);
     connect(folderManager, &FolderManager::folderAdded, this, &MainWindow::onFolderAdded);
@@ -169,8 +192,12 @@ void MainWindow::connectSignals()
 
 void MainWindow::newProject()
 {
-    QString projectPath = QFileDialog::getExistingDirectory(this, "Select Project Location");
-    if (projectPath.isEmpty()) return;
+    if (projectManager->hasOpenProject() && !confirmProjectClose()) {
+        return;
+    }
+
+    QString projectDir = QFileDialog::getExistingDirectory(this, "Select Project Location");
+    if (projectDir.isEmpty()) return;
 
     bool ok;
     QString projectName = QInputDialog::getText(this, "New Project",
@@ -179,10 +206,12 @@ void MainWindow::newProject()
                                                 "My Photo Project", &ok);
     if (!ok || projectName.isEmpty()) return;
 
-    QString fullProjectPath = projectPath + "/" + projectName + ".photoproj";
+    // Create project directory path
+    QString projectPath = projectDir + "/" + projectName;
 
-    if (projectManager->createProject(fullProjectPath, projectName)) {
+    if (projectManager->createProject(projectPath, projectName)) {
         updateStatus("Created project: " + projectName);
+        hideWelcomeScreen();
     } else {
         QMessageBox::warning(this, "Error", "Failed to create project.");
     }
@@ -190,33 +219,39 @@ void MainWindow::newProject()
 
 void MainWindow::openProject()
 {
+    if (projectManager->hasOpenProject() && !confirmProjectClose()) {
+        return;
+    }
+
     QString projectPath = QFileDialog::getExistingDirectory(this, "Open Project");
     if (projectPath.isEmpty()) return;
 
+    openProject(projectPath);
+}
+
+void MainWindow::openProject(const QString &projectPath)
+{
     if (projectManager->openProject(projectPath)) {
-        // Load project folders into folder manager
-        QStringList projectFolders = projectManager->getProjectFolders();
-        folderManager->clearAllFolders();
-
-        for (const QString &folder : projectFolders) {
-            folderManager->addFolder(folder);
-        }
-
+        hideWelcomeScreen();
         updateStatus("Opened project: " + projectManager->currentProjectName());
     } else {
-        QMessageBox::warning(this, "Error", "Failed to open project.");
+        QMessageBox::warning(this, "Error",
+                             "Failed to open project. Please ensure the folder contains a valid PhotoManager project.");
     }
 }
 
 void MainWindow::closeProject()
 {
-    if (projectManager->hasOpenProject()) {
-        projectManager->closeProject();
-        folderManager->clearAllFolders();
-        imageGrid->clearImages();
-        imageLabel->setImagePixmap(QPixmap());
-        updateStatus("Project closed");
+    if (!projectManager->hasOpenProject()) {
+        return;
     }
+
+    if (!confirmProjectClose()) {
+        return;
+    }
+
+    projectManager->closeProject();
+    showWelcomeScreen();
 }
 
 void MainWindow::synchronizeProject()
@@ -228,22 +263,6 @@ void MainWindow::synchronizeProject()
 
     SyncDialog dialog(projectManager, this);
     dialog.exec();
-}
-
-void MainWindow::clearProject()
-{
-    QMessageBox::StandardButton result = QMessageBox::question(this, "Clear Project",
-                                                               "Clear all folders from the current project?\n\n"
-                                                               "This will not delete any files from disk.",
-                                                               QMessageBox::Yes | QMessageBox::No,
-                                                               QMessageBox::No);
-
-    if (result == QMessageBox::Yes) {
-        folderManager->clearAllFolders();
-        imageGrid->clearImages();
-        imageLabel->setImagePixmap(QPixmap());
-        updateStatus("Project cleared");
-    }
 }
 
 void MainWindow::showProjectInfo()
@@ -262,38 +281,158 @@ void MainWindow::showProjectInfo()
 
         QMessageBox::information(this, "Project Information", info);
     } else {
-        QStringList projectFolders = folderManager->getAllFolderPaths();
-
-        QString info = QString("Current session contains %1 folder(s):\n\n").arg(projectFolders.size());
-
-        for (const QString &folder : projectFolders) {
-            QFileInfo folderInfo(folder);
-            info += QString("• %1\n  %2\n\n").arg(folderInfo.baseName()).arg(folder);
-        }
-
-        if (projectFolders.isEmpty()) {
-            info = "No folders in current session.\n\nUse 'Add Folder' to add folders.";
-        }
-
-        QMessageBox::information(this, "Session Information", info);
+        QMessageBox::information(this, "No Project",
+                                 "No project is currently open.\n\n"
+                                 "Create a new project or open an existing one to view project information.");
     }
+}
+
+// ===== PROJECT WORKFLOW =====
+
+void MainWindow::showWelcomeScreen()
+{
+    if (welcomeWidget) {
+        return; // Already showing
+    }
+
+    welcomeWidget = new QWidget;
+    QVBoxLayout *layout = new QVBoxLayout(welcomeWidget);
+    layout->setAlignment(Qt::AlignCenter);
+
+    QLabel *titleLabel = new QLabel("Welcome to Photo Manager");
+    titleLabel->setStyleSheet("font-size: 24px; font-weight: bold; margin: 20px;");
+    titleLabel->setAlignment(Qt::AlignCenter);
+
+    QLabel *descLabel = new QLabel("Create a new project or open an existing one to get started");
+    descLabel->setStyleSheet("font-size: 14px; color: gray; margin: 10px;");
+    descLabel->setAlignment(Qt::AlignCenter);
+
+    newProjectButton = new QPushButton("Create New Project");
+    newProjectButton->setStyleSheet("QPushButton { font-size: 14px; padding: 10px 20px; }");
+    connect(newProjectButton, &QPushButton::clicked, this, [this]() { newProject(); });
+
+    openProjectButton = new QPushButton("Open Existing Project");
+    openProjectButton->setStyleSheet("QPushButton { font-size: 14px; padding: 10px 20px; }");
+    connect(openProjectButton, &QPushButton::clicked, this, [this]() { openProject(); });
+
+    layout->addWidget(titleLabel);
+    layout->addWidget(descLabel);
+    layout->addSpacing(20);
+    layout->addWidget(newProjectButton);
+    layout->addWidget(openProjectButton);
+
+    // Replace the image grid with welcome screen
+    QWidget *centralWidget = this->centralWidget();
+    QHBoxLayout *mainLayout = qobject_cast<QHBoxLayout*>(centralWidget->layout());
+    if (mainLayout) {
+        QSplitter *splitter = qobject_cast<QSplitter*>(mainLayout->itemAt(0)->widget());
+        if (splitter) {
+            splitter->replaceWidget(1, welcomeWidget);
+            imageGrid->setVisible(false);
+        }
+    }
+
+    enableProjectActions(false);
+}
+
+void MainWindow::hideWelcomeScreen()
+{
+    if (!welcomeWidget) {
+        return; // Not showing
+    }
+
+    // Replace welcome screen with image grid
+    QWidget *centralWidget = this->centralWidget();
+    QHBoxLayout *mainLayout = qobject_cast<QHBoxLayout*>(centralWidget->layout());
+    if (mainLayout) {
+        QSplitter *splitter = qobject_cast<QSplitter*>(mainLayout->itemAt(0)->widget());
+        if (splitter) {
+            splitter->replaceWidget(1, imageGrid);
+            imageGrid->setVisible(true);
+        }
+    }
+
+    welcomeWidget->deleteLater();
+    welcomeWidget = nullptr;
+
+    enableProjectActions(true);
+}
+
+bool MainWindow::confirmProjectClose()
+{
+    if (!projectManager->hasOpenProject()) {
+        return true;
+    }
+
+    QMessageBox::StandardButton result = QMessageBox::question(this, "Close Project",
+                                                               "Close the current project?\n\n"
+                                                               "Any unsaved changes will be lost.",
+                                                               QMessageBox::Yes | QMessageBox::No,
+                                                               QMessageBox::No);
+    return result == QMessageBox::Yes;
+}
+
+void MainWindow::enableProjectActions(bool enabled)
+{
+    addFolderButton->setEnabled(enabled);
+
+    // Enable/disable menu actions
+    QList<QAction*> actions = menuBar()->actions();
+    for (QAction *action : actions) {
+        if (action->text() == "&Project") {
+            action->menu()->setEnabled(enabled);
+            break;
+        }
+    }
+}
+
+// ===== PROJECT MANAGER SIGNALS =====
+
+void MainWindow::onProjectOpened(const QString &projectName)
+{
+    // Load project folders into folder manager
+    QStringList projectFolders = projectManager->getProjectFolders();
+    folderManager->clearAllFolders();
+
+    for (const QString &folder : projectFolders) {
+        folderManager->addFolder(folder);
+    }
+
+    updateWindowTitle();
+    enableProjectActions(true);
+    updateStatus("Project opened: " + projectName);
+}
+
+void MainWindow::onProjectClosed()
+{
+    folderManager->clearAllFolders();
+    imageGrid->clearImages();
+    imageLabel->setImagePixmap(QPixmap());
+    updateWindowTitle();
+    enableProjectActions(false);
+    updateStatus("Project closed");
 }
 
 // ===== FOLDER MANAGEMENT =====
 
 void MainWindow::addFolder()
 {
+    // Check if we have an open project
+    if (!projectManager->hasOpenProject()) {
+        QMessageBox::information(this, "No Project",
+                                 "Please create or open a project before adding folders.\n\n"
+                                 "Use File → New Project or File → Open Project.");
+        return;
+    }
+
     updateStatus("Opening folder dialog...");
     QString folderPath = QFileDialog::getExistingDirectory(this, "Select Folder");
     if (!folderPath.isEmpty()) {
+        // Add to both project database and folder manager
+        projectManager->addFolder(folderPath);
         folderManager->addFolder(folderPath);
 
-        // If we have an open project, add to project database
-        if (projectManager->hasOpenProject()) {
-            projectManager->addFolder(folderPath);
-        }
-
-        updateStatus("Folder added successfully");
+        updateStatus("Folder added to project successfully");
     } else {
         updateStatus("No folder selected");
     }
@@ -381,9 +520,9 @@ void MainWindow::saveSettings()
     settings->setValue("windowGeometry", saveGeometry());
     settings->setValue("windowState", saveState());
 
-    // Save project folders (legacy support)
-    if (folderManager) {
-        folderManager->saveProject(settings);
+    // Save current project path instead of legacy folder system
+    if (projectManager && projectManager->hasOpenProject()) {
+        settings->setValue("lastProjectPath", projectManager->currentProjectPath());
     }
 }
 
@@ -394,9 +533,13 @@ void MainWindow::loadSettings()
     restoreGeometry(settings->value("windowGeometry").toByteArray());
     restoreState(settings->value("windowState").toByteArray());
 
-    // Load project folders (legacy support)
-    if (folderManager) {
-        folderManager->loadProject(settings);
+    // Load last opened project instead of legacy folder system
+    QString lastProjectPath = settings->value("lastProjectPath").toString();
+    if (!lastProjectPath.isEmpty() && QDir(lastProjectPath).exists()) {
+        // Delay project loading to ensure UI is ready
+        QTimer::singleShot(100, [this, lastProjectPath]() {
+            openProject(lastProjectPath);
+        });
     }
 }
 
@@ -415,4 +558,15 @@ void MainWindow::clearStatus()
     if (m_statusBar) {
         m_statusBar->showMessage("Ready");
     }
+}
+
+void MainWindow::updateWindowTitle()
+{
+    QString title = "Photo Manager";
+
+    if (projectManager && projectManager->hasOpenProject()) {
+        title += " - " + projectManager->currentProjectName();
+    }
+
+    setWindowTitle(title);
 }
