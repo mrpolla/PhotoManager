@@ -1,103 +1,34 @@
 #include "mainwindow.h"
-#include <QLabel>
+#include "imagegridwidget.h"
+#include "foldermanager.h"
+#include "zoomableimagelabel.h"
+#include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSplitter>
 #include <QTreeWidget>
-#include <QScrollArea>
+#include <QLabel>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QDir>
-#include <QTreeWidgetItem>
 #include <QStatusBar>
 #include <QProgressBar>
 #include <QTimer>
 #include <QSettings>
-#include <QStandardPaths>
-#include <QCryptographicHash>
-#include <QFile>
-#include <QFileInfo>
+#include <QMenuBar>
 #include <QPixmap>
-
-ClickableLabel::ClickableLabel(const QString &imagePath, QWidget *parent)
-    : QLabel(parent), m_imagePath(imagePath) {
-    setCursor(Qt::PointingHandCursor);
-    setStyleSheet("border: 1px solid lightgray; margin: 2px;");
-}
-
-void ClickableLabel::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton) {
-        emit clicked(m_imagePath);  // This should emit the signal
-    }
-    QLabel::mousePressEvent(event);
-}
+#include <QFileInfo>
+#include <QMessageBox>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), thumbnailSize(120)
+    : QMainWindow(parent)
 {
-    // Initialize settings and cache
-    settings = new QSettings("PhotoManager", "PhotoManager", this);
-    initializeThumbnailCache();
+    // Create thumbnail service first
+    thumbnailService = new ThumbnailService(this);
 
-    // Create central widget
-    QWidget *centralWidget = new QWidget(this);
-    setCentralWidget(centralWidget);
-
-    // Create layout
-    QHBoxLayout *mainLayout = new QHBoxLayout(centralWidget);
-
-    // Create splitter
-    QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
-    mainLayout->addWidget(splitter);
-
-    // Create left panel (folder tree)
-    QWidget *leftPanel = new QWidget;
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
-    addFolderButton = new QPushButton("Add Folder");
-    treeWidget = new QTreeWidget;
-    treeWidget->setHeaderLabel("Folders");
-    leftLayout->addWidget(addFolderButton);
-    leftLayout->addWidget(treeWidget);
-
-    // Create middle panel (scroll area)
-    scrollArea = new QScrollArea;
-    scrollArea->setWidgetResizable(true);
-    QLabel *placeholderLabel = new QLabel("Select a folder");
-    placeholderLabel->setAlignment(Qt::AlignCenter);
-    scrollArea->setWidget(placeholderLabel);
-
-    // Create right panel (image display)
-    imageLabel = new QLabel;
-    imageLabel->setText("Select an image");
-    imageLabel->setAlignment(Qt::AlignCenter);
-    imageLabel->setMinimumSize(300, 300);
-    imageLabel->setStyleSheet("border: 1px solid gray;");
-
-    // Add panels to splitter
-    splitter->addWidget(leftPanel);
-    splitter->addWidget(scrollArea);
-    splitter->addWidget(imageLabel);
-
-    // Create status bar
-    m_statusBar = this->statusBar();
-    progressBar = new QProgressBar();
-    progressBar->setVisible(false);
-    m_statusBar->addPermanentWidget(progressBar);
-    m_statusBar->showMessage("Ready");
-
-    // Setup timer
-    statusTimer = new QTimer(this);
-    statusTimer->setSingleShot(true);
-    connect(statusTimer, &QTimer::timeout, this, &MainWindow::clearStatus);
-
-    // Connect signals
-    connect(addFolderButton, &QPushButton::clicked, this, &MainWindow::addFolder);
-    connect(treeWidget, &QTreeWidget::itemClicked, this, &MainWindow::onFolderSelected);
-
-    setWindowTitle("Photo Manager");
-    resize(1200, 800);
-
-    updateStatus("Application started - cache ready");
+    setupUI();
+    loadSettings();
+    updateStatus("Photo Manager ready");
 }
 
 MainWindow::~MainWindow()
@@ -105,122 +36,271 @@ MainWindow::~MainWindow()
     saveSettings();
 }
 
-void MainWindow::initializeThumbnailCache()
+void MainWindow::setupUI()
 {
-    cacheDirectory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/PhotoManager";
-    QDir().mkpath(cacheDirectory);
-    updateStatus("Cache directory: " + cacheDirectory);
+    createMenuBar();
+    createMainLayout();
+    createStatusBar();
+    connectSignals();
+
+    setWindowTitle("Photo Manager");
+    resize(1200, 800);
 }
 
-QString MainWindow::getCacheKey(const QString &imagePath)
+void MainWindow::createMenuBar()
 {
-    QFileInfo fileInfo(imagePath);
-    QString key = QString("%1_%2_%3").arg(fileInfo.fileName())
-                      .arg(fileInfo.lastModified().toSecsSinceEpoch())
-                      .arg(thumbnailSize);
-    return QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Md5).toHex();
+    QMenuBar *menuBar = this->menuBar();
+
+    // File Menu
+    QMenu *fileMenu = menuBar->addMenu("&File");
+    fileMenu->addAction("&Add Folder", QKeySequence::Open, this, &MainWindow::addFolder);
+    fileMenu->addSeparator();
+    fileMenu->addAction("&Clear Project", this, &MainWindow::clearProject);
+    fileMenu->addSeparator();
+    fileMenu->addAction("&Exit", QKeySequence::Quit, this, &QWidget::close);
+
+    // View Menu
+    QMenu *viewMenu = menuBar->addMenu("&View");
+    viewMenu->addAction("&Refresh", QKeySequence::Refresh, this, &MainWindow::refreshCurrentFolder);
+    viewMenu->addSeparator();
+    viewMenu->addAction("&Expand All", this, [this]() { folderManager->expandAll(); });
+    viewMenu->addAction("&Collapse All", this, [this]() { folderManager->collapseAll(); });
+    viewMenu->addSeparator();
+    viewMenu->addAction("&Clear Thumbnail Cache", this, [this]() {
+        thumbnailService->clearCache();
+        updateStatus("Thumbnail cache cleared");
+    });
+
+    // Project Menu
+    QMenu *projectMenu = menuBar->addMenu("&Project");
+    projectMenu->addAction("&Project Info", this, &MainWindow::showProjectInfo);
 }
 
-QPixmap MainWindow::getOrCreateThumbnail(const QString &imagePath)
+void MainWindow::createMainLayout()
 {
-    // Test with a simple approach first
-    QPixmap originalPixmap(imagePath);
-    if (!originalPixmap.isNull()) {
-        return originalPixmap.scaled(thumbnailSize, thumbnailSize,
-                                     Qt::KeepAspectRatio,
-                                     Qt::SmoothTransformation);
+    // Create central widget and main layout
+    QWidget *centralWidget = new QWidget(this);
+    setCentralWidget(centralWidget);
+    QHBoxLayout *mainLayout = new QHBoxLayout(centralWidget);
+
+    // Create splitter for resizable panels
+    QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
+    mainLayout->addWidget(splitter);
+
+    // Left Panel: Folder Tree with FolderManager
+    QWidget *leftPanel = new QWidget;
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    addFolderButton = new QPushButton("Add Folder");
+
+    // Create tree widget and folder manager
+    QTreeWidget *treeWidget = new QTreeWidget;
+    folderManager = new FolderManager(treeWidget, this);
+
+    leftLayout->addWidget(addFolderButton);
+    leftLayout->addWidget(treeWidget);
+
+    // Middle Panel: Image Grid
+    imageGrid = new ImageGridWidget(thumbnailService);  // Pass thumbnail service
+
+    // Right Panel: Zoomable Image Display
+    imageScrollArea = new QScrollArea;
+    imageScrollArea->setWidgetResizable(false);
+    imageScrollArea->setAlignment(Qt::AlignCenter);
+    imageScrollArea->setMinimumSize(300, 300);
+    imageScrollArea->setStyleSheet("border: 1px solid gray; background-color: lightgray;");
+
+    imageLabel = new ZoomableImageLabel;
+    imageLabel->setText("Select an image");
+
+    imageScrollArea->setWidget(imageLabel);
+
+    // Connect zoom signal for status updates
+    connect(imageLabel, &ZoomableImageLabel::zoomChanged,
+            [this](double zoom) {
+                updateStatus(QString("Zoom: %1%").arg(qRound(zoom * 100)));
+            });
+
+    // Add panels to splitter
+    splitter->addWidget(leftPanel);
+    splitter->addWidget(imageGrid);
+    splitter->addWidget(imageScrollArea);  // Use scroll area
+    splitter->setSizes({250, 500, 350});
+}
+
+void MainWindow::createStatusBar()
+{
+    m_statusBar = statusBar();
+    progressBar = new QProgressBar();
+    progressBar->setVisible(false);
+    m_statusBar->addPermanentWidget(progressBar);
+    m_statusBar->showMessage("Ready");
+
+    statusTimer = new QTimer(this);
+    statusTimer->setSingleShot(true);
+    connect(statusTimer, &QTimer::timeout, this, &MainWindow::clearStatus);
+}
+
+void MainWindow::connectSignals()
+{
+    // UI signals
+    connect(addFolderButton, &QPushButton::clicked, this, &MainWindow::addFolder);
+
+    // FolderManager signals
+    connect(folderManager, &FolderManager::folderSelected, this, &MainWindow::onFolderSelected);
+    connect(folderManager, &FolderManager::folderAdded, this, &MainWindow::onFolderAdded);
+
+    // ImageGridWidget signals
+    connect(imageGrid, &ImageGridWidget::imageClicked, this, &MainWindow::onImageClicked);
+    connect(imageGrid, &ImageGridWidget::loadingStarted, this, &MainWindow::onLoadingStarted);
+    connect(imageGrid, &ImageGridWidget::loadingProgress, this, &MainWindow::onLoadingProgress);
+    connect(imageGrid, &ImageGridWidget::loadingFinished, this, &MainWindow::onLoadingFinished);
+}
+
+void MainWindow::clearProject()
+{
+    int result = QMessageBox::question(this, "Clear Project",
+                                       "Clear all folders from the current project?\n\n"
+                                       "This will not delete any files from disk.",
+                                       QMessageBox::Yes | QMessageBox::No,
+                                       QMessageBox::No);
+
+    if (result == QMessageBox::Yes) {
+        folderManager->clearAllFolders();
+        imageGrid->clearImages();
+        imageLabel->setPixmap(QPixmap());
+        imageLabel->setText("Select an image");
+        updateStatus("Project cleared");
     }
-    return QPixmap();
 }
+
+void MainWindow::showProjectInfo()
+{
+    QStringList projectFolders = folderManager->getAllFolderPaths();
+
+    QString info = QString("Project contains %1 folder(s):\n\n").arg(projectFolders.size());
+
+    for (const QString &folder : projectFolders) {
+        QFileInfo folderInfo(folder);
+        info += QString("• %1\n  %2\n\n").arg(folderInfo.baseName()).arg(folder);
+    }
+
+    if (projectFolders.isEmpty()) {
+        info = "No folders in current project.\n\nUse 'Add Folder' to add folders to your project.";
+    }
+
+    QMessageBox::information(this, "Project Information", info);
+}
+
+// ===== UI ACTIONS =====
 
 void MainWindow::addFolder()
 {
     updateStatus("Opening folder dialog...");
     QString folderPath = QFileDialog::getExistingDirectory(this, "Select Folder");
     if (!folderPath.isEmpty()) {
-        QTreeWidgetItem *item = new QTreeWidgetItem(treeWidget);
-        item->setText(0, QDir(folderPath).dirName());
-        item->setData(0, Qt::UserRole, folderPath);
-        treeWidget->addTopLevelItem(item);
+        folderManager->addFolder(folderPath);
         updateStatus("Folder added successfully");
     } else {
         updateStatus("No folder selected");
     }
 }
 
-void MainWindow::onFolderSelected()
+void MainWindow::refreshCurrentFolder()
 {
-    QTreeWidgetItem *currentItem = treeWidget->currentItem();
-    if (currentItem) {
-        QString folderPath = currentItem->data(0, Qt::UserRole).toString();
-
-        updateStatus("Loading images from folder...");
-
-        // Create a new widget for the scroll area content
-        QWidget *contentWidget = new QWidget;
-        QGridLayout *gridLayout = new QGridLayout(contentWidget);
-        gridLayout->setSpacing(5);
-
-        // Get all image files from folder
-        QDir dir(folderPath);
-        QStringList filters;
-        filters << "*.jpg" << "*.jpeg" << "*.png" << "*.bmp" << "*.gif" << "*.tiff" << "*.webp";
-        QStringList imageFiles = dir.entryList(filters, QDir::Files);
-
-        if (imageFiles.isEmpty()) {
-            QLabel *noImagesLabel = new QLabel("No images found in this folder");
-            noImagesLabel->setAlignment(Qt::AlignCenter);
-            gridLayout->addWidget(noImagesLabel, 0, 0);
-        } else {
-            // Calculate columns based on scroll area width
-            int columns = qMax(1, scrollArea->width() / (thumbnailSize + 10));
-
-            // Add images in grid
-            int row = 0, col = 0;
-            int imageCount = 0;
-
-            for (const QString &fileName : imageFiles) {
-                // Limit to first 50 images for now (to avoid performance issues)
-                if (imageCount >= 50) break;
-
-                QString fullPath = dir.absoluteFilePath(fileName);
-                QPixmap thumbnail = getOrCreateThumbnail(fullPath);
-
-                if (!thumbnail.isNull()) {
-                    // Create clickable thumbnail
-                    ClickableLabel *thumbnailLabel = new ClickableLabel(fullPath);
-                    thumbnailLabel->setPixmap(thumbnail);
-                    thumbnailLabel->setAlignment(Qt::AlignCenter);
-                    thumbnailLabel->setFixedSize(thumbnailSize + 4, thumbnailSize + 4);
-
-                    // Connect click signal - let's make sure this works
-                    connect(thumbnailLabel, &ClickableLabel::clicked, this, &MainWindow::onImageClicked);
-
-                    // Add debug: change cursor and add tooltip
-                    thumbnailLabel->setCursor(Qt::PointingHandCursor);
-                    thumbnailLabel->setToolTip("Click to view: " + QFileInfo(fullPath).fileName());
-
-                    gridLayout->addWidget(thumbnailLabel, row, col);
-
-                    col++;
-                    if (col >= columns) {
-                        col = 0;
-                        row++;
-                    }
-                    imageCount++;
-                }
-            }
-
-            updateStatus(QString("Loaded %1 images from folder").arg(imageCount));
-        }
-
-        // Set the widget to scroll area
-        scrollArea->setWidget(contentWidget);
-
-        // Save last opened folder
-        settings->setValue("lastFolder", folderPath);
+    QString currentFolder = folderManager->getCurrentFolderPath();
+    if (!currentFolder.isEmpty()) {
+        onFolderSelected(currentFolder);
     }
 }
+
+// ===== FOLDER MANAGEMENT =====
+
+void MainWindow::onFolderSelected(const QString &folderPath)
+{
+    // Let ImageGridWidget handle the image loading
+    imageGrid->loadImagesFromFolder(folderPath);
+
+    // Save last opened folder
+    settings->setValue("lastFolder", folderPath);
+    updateStatus("Loading folder: " + QDir(folderPath).dirName());
+}
+
+void MainWindow::onFolderAdded(const QString &folderPath)
+{
+    updateStatus("Added folder: " + QDir(folderPath).dirName());
+}
+
+// ===== IMAGE HANDLING =====
+
+void MainWindow::onImageClicked(const QString &imagePath)
+{
+    displayFullImage(imagePath);
+}
+
+void MainWindow::displayFullImage(const QString &imagePath)
+{
+    updateStatus("Loading full image...");
+
+    QPixmap fullImage(imagePath);
+    if (!fullImage.isNull()) {
+        imageLabel->setImagePixmap(fullImage);
+
+        QFileInfo fileInfo(imagePath);
+        updateStatus(QString("Viewing: %1 (%2x%3)")
+                         .arg(fileInfo.fileName())
+                         .arg(fullImage.width())
+                         .arg(fullImage.height()));
+    } else {
+        imageLabel->setImagePixmap(QPixmap());
+        updateStatus("Could not load image: " + imagePath);
+    }
+}
+// ===== LOADING PROGRESS =====
+
+void MainWindow::onLoadingStarted(int totalImages)
+{
+    progressBar->setMaximum(totalImages);
+    progressBar->setValue(0);
+    progressBar->setVisible(true);
+    updateStatus(QString("Loading %1 images...").arg(totalImages));
+}
+
+void MainWindow::onLoadingProgress(int loaded, int total)
+{
+    progressBar->setValue(loaded);
+}
+
+void MainWindow::onLoadingFinished(int totalImages)
+{
+    progressBar->setVisible(false);
+    updateStatus(QString("Loaded %1 images").arg(totalImages));
+}
+
+// ===== SETTINGS MANAGEMENT =====
+
+void MainWindow::saveSettings()
+{
+    if (!settings) return;
+
+    settings->setValue("windowGeometry", saveGeometry());
+    settings->setValue("windowState", saveState());
+
+    // Save project folders
+    folderManager->saveProject(settings);
+}
+
+void MainWindow::loadSettings()
+{
+    settings = new QSettings("PhotoManager", "PhotoManager", this);
+
+    restoreGeometry(settings->value("windowGeometry").toByteArray());
+    restoreState(settings->value("windowState").toByteArray());
+
+    // Load project folders
+    folderManager->loadProject(settings);
+}
+
+// ===== STATUS MANAGEMENT =====
 
 void MainWindow::updateStatus(const QString &message)
 {
@@ -236,51 +316,3 @@ void MainWindow::clearStatus()
         m_statusBar->showMessage("Ready");
     }
 }
-
-void MainWindow::saveSettings()
-{
-    if (settings) {
-        settings->setValue("windowGeometry", saveGeometry());
-        settings->setValue("windowState", saveState());
-    }
-}
-
-void MainWindow::loadSettings()
-{
-    if (settings) {
-        restoreGeometry(settings->value("windowGeometry").toByteArray());
-        restoreState(settings->value("windowState").toByteArray());
-    }
-}
-
-void MainWindow::onImageClicked(const QString &imagePath)
-{
-    updateStatus("Loading full image...");
-
-    QPixmap fullImage(imagePath);
-    if (!fullImage.isNull()) {
-        // Make sure imageLabel is properly set up
-        imageLabel->setScaledContents(true);
-
-        // Scale to fit the right panel while maintaining aspect ratio
-        QPixmap scaledImage = fullImage.scaled(imageLabel->size(),
-                                               Qt::KeepAspectRatio,
-                                               Qt::SmoothTransformation);
-        imageLabel->setPixmap(scaledImage);
-        imageLabel->setText(""); // Clear any text
-
-        QFileInfo fileInfo(imagePath);
-        updateStatus(QString("Viewing: %1 (%2x%3)")
-                         .arg(fileInfo.fileName())
-                         .arg(fullImage.width())
-                         .arg(fullImage.height()));
-    } else {
-        imageLabel->setText("Could not load image");
-        updateStatus("Could not load image: " + imagePath);
-    }
-}
-
-// Empty implementations
-void MainWindow::loadNextThumbnail() {}
-void MainWindow::loadSubfolders(QTreeWidgetItem *parentItem, const QString &path) {}
-void MainWindow::loadImagesInGrid(const QString &folderPath) {}

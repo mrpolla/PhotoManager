@@ -2,46 +2,19 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QTreeWidget>
-#include <QScrollArea>
 #include <QLabel>
-#include <QFileDialog>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
 #include <QPushButton>
 #include <QSettings>
-#include <QDir>
-#include <QMouseEvent>
 #include <QStatusBar>
 #include <QProgressBar>
 #include <QTimer>
-#include <QHash>
-#include <QPixmap>
-#include <QStandardPaths>
+#include "zoomableimagelabel.h"
+#include "thumbnailservice.h"
 
-QT_BEGIN_NAMESPACE
-class QTreeWidget;
-class QScrollArea;
-class QLabel;
-QT_END_NAMESPACE
-
-// ClickableLabel class
-class ClickableLabel : public QLabel
-{
-    Q_OBJECT
-public:
-    ClickableLabel(const QString &imagePath, QWidget *parent = nullptr);
-
-signals:
-    void clicked(const QString &imagePath);
-
-protected:
-    void mousePressEvent(QMouseEvent *event) override;
-
-private:
-    QString m_imagePath;
-};
+class ImageGridWidget;
+class FolderManager;
+class ThumbnailService;
+class QSplitter;
 
 class MainWindow : public QMainWindow
 {
@@ -52,42 +25,58 @@ public:
     ~MainWindow();
 
 private slots:
+    // UI Actions
     void addFolder();
-    void onFolderSelected();
+    void refreshCurrentFolder();
+    void clearProject();
+    void showProjectInfo();
+
+    // FolderManager signals
+    void onFolderSelected(const QString &folderPath);
+    void onFolderAdded(const QString &folderPath);
+
+    // ImageGridWidget signals
     void onImageClicked(const QString &imagePath);
-    void loadNextThumbnail();
+    void onLoadingStarted(int totalImages);
+    void onLoadingProgress(int loaded, int total);
+    void onLoadingFinished(int totalImages);
 
 private:
-    void loadSubfolders(QTreeWidgetItem *parentItem, const QString &path);
-    void loadImagesInGrid(const QString &folderPath);
+    // UI Setup
+    void setupUI();
+    void createMenuBar();
+    void createStatusBar();
+    void createMainLayout();
+    void connectSignals();
+
+    // Image Display
+    void displayFullImage(const QString &imagePath);
+
+    // Settings
     void saveSettings();
     void loadSettings();
+    void restoreLastFolder();
+
+    // Status Management
     void updateStatus(const QString &message);
     void clearStatus();
-    QString getCacheKey(const QString &imagePath);
-    QPixmap getOrCreateThumbnail(const QString &imagePath);
-    void initializeThumbnailCache();
 
-    QTreeWidget *treeWidget;
-    QScrollArea *scrollArea;
-    QLabel *imageLabel;
+    // UI Components
+    FolderManager *folderManager;
+    ImageGridWidget *imageGrid;
+    //QLabel *imageLabel;
+    ZoomableImageLabel *imageLabel;  // Change this line
+    QScrollArea *imageScrollArea;    // Add this line
     QPushButton *addFolderButton;
-    QSettings *settings;
     QStatusBar *m_statusBar;
     QProgressBar *progressBar;
     QTimer *statusTimer;
 
-    // Caching
-    QHash<QString, QPixmap> thumbnailCache;
-    QString cacheDirectory;
-    int thumbnailSize;
+    // Services
+    ThumbnailService *thumbnailService;  // Add this line here
 
-    // Async loading
-    QStringList pendingImages;
-    QTimer *loadTimer;
-    QWidget *currentImageWidget;
-    QGridLayout *currentGridLayout;
-    int currentRow, currentCol, maxColumns;
+    // Data
+    QSettings *settings;
 };
 
 #endif // MAINWINDOW_H
