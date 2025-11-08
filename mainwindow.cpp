@@ -4,12 +4,14 @@
 #include "zoomableimagelabel.h"
 #include "projectmanager.h"
 #include "syncdialog.h"
+#include "duplicatedialog.h"
 #include "thumbnailservice.h"
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSplitter>
 #include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QLabel>
 #include <QPushButton>
 #include <QFileDialog>
@@ -80,6 +82,8 @@ void MainWindow::createMenuBar()
     // Project Menu
     QMenu *projectMenu = menuBar->addMenu("&Project");
     projectMenu->addAction("&Synchronize...", QKeySequence::Refresh, this, &MainWindow::synchronizeProject);
+    projectMenu->addSeparator();
+    projectMenu->addAction("&Analyze Duplicates...", QKeySequence("Ctrl+D"), this, &MainWindow::analyzeDuplicates);
     projectMenu->addSeparator();
     projectMenu->addAction("&Project Info", this, &MainWindow::showProjectInfo);
 
@@ -263,6 +267,44 @@ void MainWindow::synchronizeProject()
 
     SyncDialog dialog(projectManager, this);
     dialog.exec();
+}
+
+void MainWindow::analyzeDuplicates()
+{
+    // Check if we have an open project
+    if (!projectManager->hasOpenProject()) {
+        QMessageBox::information(this, "No Project",
+                                 "Please open a project before analyzing duplicates.");
+        return;
+    }
+
+    // Check if we have any folders in the project
+    QStringList projectFolders = projectManager->getProjectFolders();
+    if (projectFolders.isEmpty()) {
+        QMessageBox::information(this, "No Folders",
+                                 "No folders found in your project.\n\n"
+                                 "Add folders to your project using File → Add Folder.");
+        return;
+    }
+
+    // Note: The duplicate analyzer will recursively scan all subfolders
+    // So even with 1 top-level folder containing multiple subfolders, analysis will work
+    updateStatus("Opening duplicate analysis...");
+
+    // Create and show the duplicate analysis dialog
+    DuplicateDialog *dialog = new DuplicateDialog(projectManager, folderManager, this);
+
+    // Connect the show folder signal to our handler
+    connect(dialog, &DuplicateDialog::showFolderInTree,
+            this, &MainWindow::onShowFolderInTree);
+
+    // Show the dialog
+    dialog->exec();
+
+    // Clean up
+    delete dialog;
+
+    updateStatus("Duplicate analysis completed");
 }
 
 void MainWindow::showProjectInfo()
@@ -462,6 +504,54 @@ void MainWindow::onFolderSelected(const QString &folderPath)
 void MainWindow::onFolderAdded(const QString &folderPath)
 {
     updateStatus("Added folder: " + QDir(folderPath).dirName());
+}
+
+void MainWindow::onShowFolderInTree(const QString &folderPath)
+{
+    if (!folderManager) {
+        return;
+    }
+
+    // Find the folder in the tree and select it
+    QTreeWidget *treeWidget = findChild<QTreeWidget*>();
+    if (!treeWidget) {
+        return;
+    }
+
+    // Try to find and expand to the folder
+    QTreeWidgetItemIterator it(treeWidget);
+    while (*it) {
+        QTreeWidgetItem *item = *it;
+        QString itemPath = item->data(0, Qt::UserRole).toString();
+
+        if (itemPath == folderPath) {
+            // Found the item - select and expand it
+            treeWidget->setCurrentItem(item);
+            treeWidget->scrollToItem(item);
+
+            // Expand parent items to make sure it's visible
+            QTreeWidgetItem *parent = item->parent();
+            while (parent) {
+                parent->setExpanded(true);
+                parent = parent->parent();
+            }
+
+            // Also select the folder for image loading
+            onFolderSelected(folderPath);
+
+            updateStatus(QString("Showing folder: %1").arg(QFileInfo(folderPath).fileName()));
+
+            // Bring main window to front
+            raise();
+            activateWindow();
+
+            return;
+        }
+        ++it;
+    }
+
+    // If we get here, folder wasn't found in tree
+    updateStatus("Folder not found in project tree");
 }
 
 // ===== IMAGE HANDLING =====

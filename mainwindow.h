@@ -33,6 +33,7 @@ private slots:
     void closeProject();
     void synchronizeProject();
     void showProjectInfo();
+    void analyzeDuplicates();
 
     // === Folder Management ===
     void addFolder();
@@ -51,6 +52,9 @@ private slots:
     void onLoadingStarted(int totalImages);
     void onLoadingProgress(int loaded, int total);
     void onLoadingFinished(int totalImages);
+
+    // === Duplicate Analysis ===
+    void onShowFolderInTree(const QString &folderPath);
 
 private:
     // === UI Setup ===
